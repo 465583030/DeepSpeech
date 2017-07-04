@@ -1031,7 +1031,7 @@ class TrainingCoordinator(object):
                 if self.path.startswith(PREFIX_NEXT_INDEX):
                     index = COORD.get_next_index(self.path[len(PREFIX_NEXT_INDEX):])
                     if index >= 0:
-                        self._send_answer(str(index).encode("utf-8"))
+                        self._send_answer(str(index))
                         return
                 elif self.path.startswith(PREFIX_GET_JOB):
                     job = COORD.get_job(worker=int(self.path[len(PREFIX_GET_JOB):]))
@@ -1082,7 +1082,7 @@ class TrainingCoordinator(object):
         self._epochs_running = []
         self._epochs_done = []
         self._reset_counters()
-        self._dev_losses = []
+        self._dev_losses = [[] for x in range(FLAGS.epoch)]
 
     def _log_all_jobs(self):
         '''Use this to debug-print epoch state'''
@@ -1166,22 +1166,22 @@ class TrainingCoordinator(object):
         # Indicates, if there were 'new' epoch(s) provided
         result = False
 
+        # A sliding window over the validation losses accumulated until current epoch
+        _losses = []
         # Make sure that early stop is enabled and validation part is enabled
-        if (FLAGS.early_stop is True) and (FLAGS.validation_step > 0) and (len(self._dev_losses) >= FLAGS.earlystop_nsteps):
+        if (FLAGS.early_stop is True) and (FLAGS.validation_step > 0) and self._epoch > 0 and (self._epoch % FLAGS.earlystop_nsteps == 0):
 
+            _losses = [np.mean(x) for x in self._dev_losses[self._epoch-FLAGS.earlystop_nsteps:self._epoch]]
             # Calculate the mean of losses for past epochs
-            mean_loss = np.mean(self._dev_losses[-FLAGS.earlystop_nsteps:-2])
+            mean_loss = np.mean(_losses[-FLAGS.earlystop_nsteps:-1])
             # Calculate the standard deviation for losses from validation part in the past epochs
-            std_loss = np.std(self._dev_losses[-FLAGS.earlystop_nsteps:-2])
-            # Update the list of losses incurred
-            self._dev_losses = self._dev_losses[-FLAGS.earlystop_nsteps:]
-            log_debug('Current validation loss: %f, std_of_loss(n_step) :%f mean_loss(n_step): %f' % (self._dev_losses[-1], std_loss, mean_loss))
+            std_loss = np.std(_losses[-FLAGS.earlystop_nsteps:-1])
+            log_debug('Current validation loss: %f, std_of_loss(n_step): %f mean_loss(n_step): %f' % (_losses[-1], std_loss, mean_loss))
 
             # Making sure slight fluctuations don't bother the early stopping from performing
-            if self._dev_losses[-1] > np.max(self._dev_losses[:-2]) or (abs(self._dev_losses[-1] - mean_loss) < FLAGS.estop_mean_thresh and std_loss < FLAGS.estop_std_thresh):
+            if _losses[-1] > np.max(_losses[:-2]) or (abs(_losses[-1] - mean_loss) < FLAGS.estop_mean_thresh and std_loss < FLAGS.estop_std_thresh):
                 # Time to early stop
-                log_info('Early stop triggered!! Validation_loss:%f std_of_loss(n_step) :%f mean_loss(n_step): %f' % ((self._dev_losses[-1], std_loss, mean_loss)))
-                self._dev_losses = []
+                log_info('Early stop triggered, validation_loss: %f std_of_loss(n_step): %f mean_loss(n_step): %f' % ((_losses[-1], std_loss, mean_loss)))
                 self._end_training()
                 self._train = False
 
@@ -1564,7 +1564,7 @@ def train(server=None):
 
                     # if the job was for validation dataset then append it to the COORD's _loss for early stop verification
                     if (job.set_name == 'dev') and (FLAGS.early_stop is True):
-                        COORD._dev_losses.append(job.loss)
+                        COORD._dev_losses[COORD._epoch-1].append(job.loss)
 
                     # Send the current job to coordinator and receive the next one
                     log_debug('Sending %s...' % str(job))
